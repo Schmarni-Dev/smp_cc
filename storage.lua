@@ -1,10 +1,18 @@
+local output_net_name = "minecraft:chest_1"
+local input_net_name = "minecraft:chest_0"
+
+-- NOT IMPLEMENTED YET
+local input_net_names = { [1] = input_net_name }
 ---@type ccTweaked.http.Websocket | nil
 local remote_ws = nil;
 local is_waiting_for_ws = true;
 local search_str = "";
 local should_redraw = true;
 local should_refresh_item_list = false;
+---@type "main" | "amount"
 local curr_state = "main";
+---@type fun()[]
+local tasks = {}
 local function request_redraw_and_list()
 	should_redraw = true;
 	should_refresh_item_list = true
@@ -136,7 +144,7 @@ end
 ---@param nbt_hash integer?
 ---@return remote_item
 local function create_item(ident, name, amount, max_stack_size, nbt_hash)
-	return { ident, name, amount, max_stack_size, nbt_hash }
+	return { ident = ident, name = name, amount = amount, max_stack_size = max_stack_size, nbt_hash = nbt_hash }
 end
 
 local function handle_list_refresh_requests()
@@ -165,7 +173,8 @@ local function send_pull_request(item)
 		false)
 end
 ---@param item remote_item
-local function send_put_request(item)
+---@param slot number
+local function send_put_request(item, slot)
 	send(textutils.serialiseJSON({
 			InsertRequest = {
 				ident = item.ident,
@@ -176,9 +185,50 @@ local function send_put_request(item)
 			}
 		}),
 		false)
+	local w = recv();
+	if w == nil then
+		connect_websocket()
+		w = recv()
+	end
+	local packet = textutils.unserialiseJSON(w, { parse_empty_array = false });
+	if packet.Insert ~= nil then
+		local input = peripheral.wrap(input_net_names[1])
+		for _, value in ipairs(packet.Insert) do
+			local item = input.getItemDetail(slot)
+			if item ~= nil then
+				local amount = input.pushItems(value.storage, slot, value.amount, value.slot);
+				send(textutils.serialiseJSON({
+					ItemPushed = {
+						storage = value.storage,
+						slot = value.slot,
+						item = create_item(item.name,
+							item.displayName, amount, item.maxCount, item.nbt)
+					}
+				}))
+				request_redraw_and_list()
+			end
+		end
+	end
 end
 
 local item_display_list = {}
+
+local output_inv = peripheral.wrap(output_net_name);
+local input_invs = {}
+for i, value in ipairs(input_net_names) do
+	input_invs[i] = peripheral.wrap(value);
+end
+
+local function request_puts()
+	local input = peripheral.wrap(input_net_names[1]);
+	for slot, _ in pairs(input.list()) do
+		local item = input.getItemDetail(slot)
+		if item ~= nil then
+			local item = create_item(item.name, item.displayName, item.count, item.maxCount, item.nbt)
+			send_put_request(item, slot)
+		end
+	end
+end
 
 local function handle_remote_msgs()
 	local msg, is_bin = recv()
@@ -188,7 +238,7 @@ local function handle_remote_msgs()
 	end
 	if msg == nil then
 		connect_websocket();
-		error("msg is nil")
+		printError("msg is nil")
 		return
 	end
 	local packet = textutils.unserialiseJSON(msg, { parse_empty_array = false })
@@ -200,16 +250,36 @@ local function handle_remote_msgs()
 		item_display_list = packet.DisplayList or {};
 		should_redraw = true
 	end
+	if packet.Pull ~= nil then
+		for _, value in ipairs(packet.Pull) do
+			local amount = output_inv.pullItems(value.storage, value.slot, value.amount)
+			send(textutils.serialiseJSON({
+				ItemPulled = {
+					storage = value.storage,
+					slot = value.slot,
+					amount = amount
+				}
+			}))
+			should_refresh_item_list = true
+		end
+	end
 end
 
+local amount_str = ""
 local function handle_char_input()
 	---@type ccTweaked.os.event, string
 	local event, char = os.pullEvent("char");
-	search_str = search_str .. char
-	request_redraw_and_list()
+	if curr_state == "main" then
+		search_str = search_str .. char
+		request_redraw_and_list()
+	else
+		amount_str = amount_str .. char
+		should_redraw = true
+	end
 end
 local coursor_height = 1;
 local offset = 0
+local current_item = {}
 local function handle_key_input()
 	---@type ccTweaked.os.event, integer
 	local event, key = os.pullEvent("key");
@@ -237,18 +307,80 @@ local function handle_key_input()
 		should_redraw = true
 	end
 	if key == keys["return"] and curr_state == "main" then
-		local item = item_display_list[coursor_height + offset];
-		item.amount = 3
-		send_put_request(item)
+		local item = {};
+		for key, value in pairs(item_display_list[coursor_height + offset]) do
+			item[key] = value
+		end
+		amount_str = ""
+		current_item = item
+		curr_state = "amount"
+		should_redraw = true
+		-- item.amount = 3
+		-- send_pull_request(item)
 		-- error(textutils.serialise(item))
 	end
+
+
+	if key == keys.backspace and curr_state == "amount" then
+		if amount_str == "" then
+			return
+		end
+		amount_str = amount_str;
+		amount_str = string.sub(amount_str, 1, string.len(amount_str) - 1);
+		should_redraw = true
+	end
+	if key == keys.delete and curr_state == "amount" then
+		if amount_str == "" then
+			return
+		end
+		amount_str = "";
+		should_redraw = true
+	end
+	if key == keys["return"] and curr_state == "amount" then
+		local a = tonumber(amount_str)
+		if a ~= nil then
+			current_item.amount = a
+			send_pull_request(current_item)
+			curr_state = "main"
+		end
+	end
 end
+local amount_window = window.create(term.current(), 10, 10, 20, 3, false)
 local function DrawMainTui()
 	if not should_redraw then
 		os.sleep(0);
 		return
 	end
 	local width, height = term.getSize()
+	local amount_width = 30
+	amount_window.setCursorPos(1, 2);
+	amount_window.clearLine()
+	amount_window.redraw()
+
+	amount_window.reposition(math.floor((width - amount_width) / 2), math.floor((height - 3) / 2), width, 3)
+	amount_window.setVisible(curr_state == "amount")
+	amount_window.setCursorPos(1, 1);
+	amount_window.write("<")
+	amount_window.setCursorPos(amount_width, 1);
+	amount_window.write(">")
+	for i = 1, amount_width - 2, 1 do
+		amount_window.setCursorPos(i + 1, 1);
+		amount_window.write("=")
+	end
+	amount_window.setCursorPos(1, 2);
+	amount_window.write("|")
+	amount_window.setCursorPos(3, 2);
+	amount_window.write("Amount: " .. amount_str)
+	amount_window.setCursorPos(amount_width, 2);
+	amount_window.write("|")
+	amount_window.setCursorPos(1, 3);
+	amount_window.write("<")
+	amount_window.setCursorPos(amount_width, 3);
+	amount_window.write(">")
+	for i = 1, amount_width - 2, 1 do
+		amount_window.setCursorPos(i + 1, 3);
+		amount_window.write("=")
+	end
 	term.setCursorBlink(false);
 	term.clear();
 	term.setCursorPos(1, 1)
@@ -260,8 +392,8 @@ local function DrawMainTui()
 	for _ = 1, width, 1 do
 		divider = divider .. "=";
 	end
-	if coursor_height > height - 3 then
-		coursor_height = height - 3
+	if coursor_height > math.min(height - 3, #item_display_list) then
+		coursor_height = math.min(height - 3, #item_display_list)
 		offset = offset + 1;
 	end
 	if coursor_height < 1 then
@@ -293,6 +425,7 @@ local function DrawMainTui()
 	term.setBackgroundColor(colors.black);
 	term.setCursorPos(string.len(printed_search_str) + 1, 1)
 	term.setCursorBlink(true);
+	amount_window.redraw()
 	os.sleep(0);
 end
 
@@ -319,6 +452,7 @@ parallel.waitForAll(
 	parallelize(handle_key_input),
 	parallelize(handle_remote_msgs),
 	parallelize(handle_list_refresh_requests),
+	parallelize(request_puts),
 	add_storage_on_attach,
 	remove_storage_on_detach,
 	termination_handler

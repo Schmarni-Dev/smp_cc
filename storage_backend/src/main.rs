@@ -14,7 +14,7 @@ use axum::{
 };
 use color_eyre::eyre::eyre;
 use futures::{stream::SplitSink, SinkExt, StreamExt};
-use log::{debug, info};
+use log::{debug, info, warn};
 use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization},
     Config,
@@ -81,13 +81,14 @@ async fn handle_packet(
     cluster: &mut StorageCluster<27>,
 ) -> color_eyre::Result<()> {
     match packet {
-        StorageMessage::InsertRequest(item) => match cluster.find_space(item) {
+        StorageMessage::InsertRequest(item) => match cluster.find_space(&item) {
             Some(slots) => {
                 let ops = slots
                     .into_iter()
                     .map(|(net_name, slot)| ItemMoveOperation {
                         storage: net_name,
                         slot: slot + 1,
+                        amount: item.amount,
                     })
                     .collect();
                 sender.send(&StorageResponse::Insert(ops)).await?;
@@ -103,13 +104,21 @@ async fn handle_packet(
                     (0..27).map(|i| (i, storage.items.get(i).and_then(|o| o.as_ref())))
                 {
                     if let Some(stored_item) = storage_item {
+                        if stored_item.ident == item.ident {
+                            info!("ident match: {}", item.ident)
+                        }
+                        if stored_item.nbt_hash == item.nbt_hash {
+                            info!("nbt match: {:x?}", item.nbt_hash)
+                        }
                         if stored_item.ident == item.ident && stored_item.nbt_hash == item.nbt_hash
                         {
-                            item.amount = min(item.amount - stored_item.amount as usize, 0);
+                            info!("found");
                             pulls.push(ItemMoveOperation {
                                 storage: storage.net_name.clone(),
                                 slot: slot + 1,
-                            })
+                                amount: min(item.amount as u8, stored_item.amount),
+                            });
+                            item.amount = item.amount.saturating_sub(stored_item.amount as usize)
                         }
                     }
                     if item.amount == 0 {
@@ -118,6 +127,7 @@ async fn handle_packet(
                     }
                 }
             }
+            sender.send(&StorageResponse::Pull(pulls)).await?;
         }
         StorageMessage::ListWithFilter(filter) => {
             let mut map = HashMap::<(&str, Option<u128>), ListItem>::new();
@@ -137,12 +147,15 @@ async fn handle_packet(
                     })
                     .amount += w.amount as usize;
             }
+
+            let mut values = map.into_values().collect::<Vec<_>>();
+            values.sort_unstable();
             if let Some(filter) = filter {
                 let mut matcher = nucleo_matcher::Matcher::new(Config::DEFAULT);
-                let mut name_map = map
-                    .into_values()
-                    .map(|item| (item.name.clone(), item))
-                    .collect::<HashMap<String, ListItem>>();
+                let mut name_map = HashMap::<String, Vec<ListItem>>::new();
+                for item in values.into_iter() {
+                    name_map.entry(item.name.clone()).or_default().push(item);
+                }
                 let filterd_names = nucleo_matcher::pattern::Pattern::new(
                     &filter,
                     CaseMatching::Smart,
@@ -153,15 +166,13 @@ async fn handle_packet(
                 let mut filtered_list = Vec::new();
                 for (val, _idk) in filterd_names {
                     if let Some(item) = name_map.remove(&val) {
-                        filtered_list.push(item);
+                        filtered_list.extend(item);
                     }
                 }
                 sender
                     .send(&StorageResponse::DisplayList(filtered_list))
                     .await?;
             } else {
-                let mut values = map.into_values().collect::<Vec<_>>();
-                values.sort_by(|i_1, i_2| i_2.amount.cmp(&i_1.amount));
                 sender.send(&StorageResponse::DisplayList(values)).await?;
             }
         }
@@ -196,12 +207,12 @@ async fn handle_packet(
                 .zip(cluster.storages.iter())
                 .find_map(|(slot, storage)| (storage.net_name == net_name).then_some(slot));
             if let Some(i) = index {
-                if let Some(item) = cluster.storages[i].items[slot].as_mut() {
-                    if min(item.amount - amount, 0) == 0 {
-                        cluster.storages[i].items[slot].take();
+                if let Some(item) = cluster.storages[i].items[slot - 1].as_mut() {
+                    if item.amount.saturating_sub(amount) == 0 {
+                        cluster.storages[i].items[slot - 1].take();
                         return Ok(());
                     }
-                    item.amount = min(item.amount - amount, 0);
+                    item.amount = item.amount.saturating_sub(amount);
                 }
             }
         }
@@ -214,14 +225,19 @@ async fn handle_packet(
                 .zip(cluster.storages.iter())
                 .find_map(|(slot, storage)| (storage.net_name == net_name).then_some(slot));
             let Some(index) = index else {
+                warn!("no storage found while inserting, cache will be out of sync!");
                 return Ok(());
             };
-            match cluster.storages[index].items[slot].as_mut() {
+            match cluster.storages[index].items[slot - 1].as_mut() {
                 Some(i) => {
+                    if !(item.ident == i.ident && item.nbt_hash == i.nbt_hash) {
+                        warn!("item not matching!")
+                    }
                     i.amount += item.amount;
                 }
                 None => {
-                    cluster.storages[index].items[slot].replace(item);
+                    info!("inserting new item");
+                    cluster.storages[index].items[slot - 1].replace(item);
                 }
             };
         }

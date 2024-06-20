@@ -12,21 +12,34 @@ pub struct StorageCluster<const SLOTS: usize> {
 }
 
 impl<const T: usize> StorageCluster<T> {
-    pub fn find_space(&self, item: Item) -> Option<Vec<(String, usize)>> {
+    pub fn find_space(&self, item: &Item) -> Option<Vec<(String, usize)>> {
+        let mut amount = item.amount;
         let mut slots = Vec::<(String, usize)>::new();
         for storage in self.storages.iter() {
             for (slot, storage_item) in
                 (0..T).map(|i| (i, storage.items.get(i).and_then(|o| o.as_ref())))
             {
                 let Some(storage_item) = storage_item else {
+                    info!("none");
                     slots.push((storage.net_name.clone(), slot));
                     return Some(slots);
                 };
-                if !(storage_item.name == item.name && storage_item.nbt_hash == item.nbt_hash) {
+                if !(storage_item.ident == item.ident && storage_item.nbt_hash == item.nbt_hash) {
                     continue;
                 }
+                info!("same item");
+                info!("in storage: {}", storage_item.ident);
+                info!("out of storage: {}", storage_item.ident);
                 if storage_item.amount < storage_item.max_stack_size {
+                    amount = amount.saturating_sub(
+                        storage_item
+                            .max_stack_size
+                            .saturating_sub(storage_item.amount),
+                    );
                     slots.push((storage.net_name.clone(), slot));
+                    if amount == 0 {
+                        return Some(slots);
+                    };
                 }
             }
         }
