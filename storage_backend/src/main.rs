@@ -73,6 +73,7 @@ async fn websocket_connection(ws: WebSocket) {
             axum::extract::ws::Message::Close(_) => {}
         }
     }
+    warn!("CLOSING WEBSOCKET CONNECTION!!!");
 }
 
 async fn handle_packet(
@@ -104,15 +105,8 @@ async fn handle_packet(
                     (0..27).map(|i| (i, storage.items.get(i).and_then(|o| o.as_ref())))
                 {
                     if let Some(stored_item) = storage_item {
-                        if stored_item.ident == item.ident {
-                            info!("ident match: {}", item.ident)
-                        }
-                        if stored_item.nbt_hash == item.nbt_hash {
-                            info!("nbt match: {:x?}", item.nbt_hash)
-                        }
                         if stored_item.ident == item.ident && stored_item.nbt_hash == item.nbt_hash
                         {
-                            info!("found");
                             pulls.push(ItemMoveOperation {
                                 storage: storage.net_name.clone(),
                                 slot: slot + 1,
@@ -130,6 +124,7 @@ async fn handle_packet(
             sender.send(&StorageResponse::Pull(pulls)).await?;
         }
         StorageMessage::ListWithFilter(filter) => {
+            debug!("cluster lenght: {}", cluster.storages.len());
             let mut map = HashMap::<(&str, Option<u128>), ListItem>::new();
             for w in cluster
                 .storages
@@ -176,20 +171,14 @@ async fn handle_packet(
                 sender.send(&StorageResponse::DisplayList(values)).await?;
             }
         }
-        StorageMessage::SyncStorages(storages) => {
-            cluster.storages = storages
-                .into_iter()
-                .map(|s| Storage::<27> {
-                    net_name: s.net_name,
-                    items: s.items.map(Option::from),
-                })
-                .collect();
-            debug!("done syncing Storages");
+        StorageMessage::AddedStorage(s) => {
+            debug!("{:?}", s.items);
+            cluster.storages.push(Storage::<27> {
+                net_name: s.net_name,
+                items: s.items.map(Option::from),
+            });
+            debug!("cluster lenght: {}", cluster.storages.len());
         }
-        StorageMessage::AddedStorage(s) => cluster.storages.push(Storage::<27> {
-            net_name: s.net_name,
-            items: s.items.map(Option::from),
-        }),
         StorageMessage::StorageRemoved(net_name) => {
             let index = (0..cluster.storages.len())
                 .zip(cluster.storages.iter())

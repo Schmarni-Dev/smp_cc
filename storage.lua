@@ -21,29 +21,44 @@ local connect_websocket = function()
 	error("connect_websocket called to early")
 end
 ---@param perph ccTweaked.peripherals.Inventory
-local function ProtoStorage_from_peripherial(perph)
+local function ProtoStorage_from_peripherial(perph, test)
 	local items = {}
 	for i = 1, 27, 1 do
 		items[i] = "None";
 	end
 	local fns = {}
+	local loops = 0
 	for slot, _ in pairs(perph.list()) do
-		fns[#fns + 1] = function()
-			local item = perph.getItemDetail(slot);
-			if item ~= nil then
-				items[slot] = {
-					Some = {
-						ident = item.name,
-						name = item.displayName,
-						amount = item.count,
-						max_stack_size = item.maxCount,
-						nbt_hash = item.nbt
-					}
+		-- loops = loops + 1
+		-- local index_1 = math.ceil(loops / 255)
+		-- if fns[index_1] == nil then
+		-- 	fns[index_1] = {}
+		-- end
+		-- fns[index_1][loops % 255] = function()
+		-- 	coroutine.yield()
+		local item = perph.getItemDetail(slot);
+		if item ~= nil then
+			items[slot] = {
+				Some = {
+					ident = item.name,
+					name = item.displayName,
+					amount = item.count,
+					max_stack_size = item.maxCount,
+					nbt_hash = item.nbt
 				}
-			end
+			}
+			-- end
+			-- coroutine.yield()
 		end
 	end
-	parallel.waitForAll(table.unpack(fns))
+	-- local w = {}
+	-- for _, fns_2 in ipairs(fns) do
+	-- 	w[#w + 1] = function()
+	-- 		parallel.waitForAll(table.unpack(fns_2))
+	-- 	end
+	-- end
+	-- parallel.waitForAll(table.unpack(w))
+	-- print(test or "")
 	return { net_name = peripheral.getName(perph), items = items }
 end
 
@@ -59,23 +74,29 @@ local function send(data, bin)
 	end
 end
 
+
+
+
 local function sync_storages_with_remote()
+	local per_batch = 200
 	local fns = {}
-	local barrels = { SyncStorages = {} }
+	local loops = 0
 	for _, value in ipairs(peripheral.getNames()) do
 		if string.match(value, "minecraft:barrel") then
-			fns[#fns + 1] = function()
+			loops = loops + 1
+			local index_1 = math.ceil(loops / per_batch)
+			if fns[index_1] == nil then
+				fns[index_1] = {}
+			end
+			fns[index_1][loops % per_batch] = function()
 				---@diagnostic disable-next-line: param-type-mismatch
-				table.insert(barrels.SyncStorages, ProtoStorage_from_peripherial(peripheral.wrap(value)));
+				send(textutils.serializeJSON({ AddedStorage = ProtoStorage_from_peripherial(peripheral.wrap(value)) }))
 			end
 		end
 	end
-	parallel.waitForAll(table.unpack(fns))
-	if barrels.SyncStorages == {} then
-		barrels.SyncStorages = textutils.empty_json_array;
+	for _, fns_2 in ipairs(fns) do
+		parallel.waitForAll(table.unpack(fns_2))
 	end
-	local str = textutils.serialiseJSON(barrels);
-	send(str, false)
 	should_refresh_item_list = true
 end
 
@@ -98,9 +119,9 @@ connect_websocket = function()
 	is_waiting_for_ws = false;
 	should_redraw = true;
 	remote_ws = ws
-	sync_storages_with_remote()
 end
 connect_websocket();
+sync_storages_with_remote()
 
 local function recv(timeout)
 	local success, result, is_bin = pcall(remote_ws.receive, timeout)
@@ -445,7 +466,6 @@ local function parallelize(fn)
 		end
 	end
 end
-remote_ws.close()
 parallel.waitForAll(
 	parallelize(DrawMainTui),
 	parallelize(handle_char_input),

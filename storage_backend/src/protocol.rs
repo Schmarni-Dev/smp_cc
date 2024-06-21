@@ -7,7 +7,6 @@ pub enum StorageMessage {
     InsertRequest(Item),
     PullRequest(RequestItem),
     ListWithFilter(Option<String>),
-    SyncStorages(Vec<ProtoStorage>),
     AddedStorage(Box<ProtoStorage>),
     StorageRemoved(String),
     ItemPulled {
