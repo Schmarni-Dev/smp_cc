@@ -1,8 +1,12 @@
-local perphs = peripheral.getNames();
-
+local input = peripheral.wrap("minecraft:chest_8")
+local output = peripheral.wrap("minecraft:chest_10")
+local fuel_input = peripheral.wrap("minecraft:chest_9")
 local fuel_items_per_operation = 2
 local items_burned_per_cycle = 3
+local tasks_per_batch = 240
 
+
+local perphs = peripheral.getNames();
 --1: input 2:fuel 3:output
 ---@type {id:string,api:ccTweaked.peripherals.Inventory}[]
 local furnaces = {}
@@ -13,9 +17,6 @@ for _, value in ipairs(perphs) do
 	end
 end
 
-local input = peripheral.wrap("minecraft:chest_8")
-local output = peripheral.wrap("minecraft:chest_10")
-local fuel_input = peripheral.wrap("minecraft:chest_9")
 
 if input == nil then
 	error("input is nil")
@@ -98,29 +99,43 @@ while true do
 	for slot, item in pairs(fuel_input.list()) do
 		fuel_items = fuel_items + item.count
 	end
+	local loops = 0
 	local funcs = {}
-	local funcs_2 = {}
-	local funcs_3 = {}
-	local input_fn = function()
-		for item, info in pairs(input_items) do
-			for _, furnace in ipairs(furnaces) do
-				-- table.insert(funcs, function()
+	for item, info in pairs(input_items) do
+		for _, furnace in ipairs(furnaces) do
+			loops = loops + 1
+			local index_1 = math.ceil(loops / tasks_per_batch)
+			if funcs[index_1] == nil then
+				funcs[index_1] = {}
+			end
+			funcs[index_1][loops % tasks_per_batch] = function()
 				transfer_first_items_from(input, items_burned_per_cycle, item, furnace.api, 1)
-				-- end)
 			end
 		end
 	end
-	local fuel = function()
-		for _, furnace in ipairs(furnaces) do
+	for _, furnace in ipairs(furnaces) do
+		loops = loops + 1
+		local index_1 = math.ceil(loops / tasks_per_batch)
+		if funcs[index_1] == nil then
+			funcs[index_1] = {}
+		end
+		funcs[index_1][loops % tasks_per_batch] = function()
 			transfer_first_items_from(fuel_input, fuel_items_per_operation,
 				"minecraft:bamboo_planks",
 				furnace.api, 2)
 		end
 	end
-	local out = function()
-		for _, furnace in ipairs(furnaces) do
+	for _, furnace in ipairs(furnaces) do
+		loops = loops + 1
+		local index_1 = math.ceil(loops / tasks_per_batch)
+		if funcs[index_1] == nil then
+			funcs[index_1] = {}
+		end
+		funcs[index_1][loops % tasks_per_batch] = function()
 			output.pullItems(peripheral.getName(furnace.api), 3)
 		end
 	end
-	parallel.waitForAll(out, fuel, input_fn)
+	for _, value in ipairs(funcs) do
+		parallel.waitForAll(table.unpack(value))
+	end
 end
