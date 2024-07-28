@@ -1,12 +1,12 @@
 pub mod protocol;
 pub mod storage_cache;
 
-use std::{cmp::min, collections::HashMap};
+use std::{cmp::min, collections::HashMap, sync::Arc};
 
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        WebSocketUpgrade,
+        State, WebSocketUpgrade,
     },
     response::IntoResponse,
     routing::get,
@@ -21,22 +21,27 @@ use nucleo_matcher::{
 };
 use protocol::{ItemMoveOperation, ListItem, StorageMessage, StorageResponse};
 use storage_cache::{Storage, StorageCluster};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::Mutex};
+
+type AppState = Arc<Mutex<StorageCluster<27>>>;
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     pretty_env_logger::init();
-    let app = Router::<()>::new()
+    let app = Router::<AppState>::new()
         .route("/", get(|| async { "HellOwO OwOrld" }))
-        .route("/storage_computer_ws", get(storage_connection));
+        .route("/storage_computer_ws", get(storage_connection))
+        .with_state(Arc::new(Mutex::new(StorageCluster::<27>::default())));
+
     axum::serve(TcpListener::bind("127.0.0.1:6969").await?, app).await?;
 
     Ok(())
 }
 
-async fn storage_connection(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(websocket_connection)
+async fn storage_connection(ws: WebSocketUpgrade, state: State<AppState>) -> impl IntoResponse {
+    let s = state.0.clone();
+    ws.on_upgrade(|w| websocket_connection(w, s))
 }
 
 struct WsSender(SplitSink<WebSocket, Message>);
@@ -49,14 +54,14 @@ impl WsSender {
     }
 }
 
-async fn websocket_connection(ws: WebSocket) {
+async fn websocket_connection(ws: WebSocket, state: AppState) {
     let (tx, mut rx) = ws.split();
     let mut tx = WsSender(tx);
-    let mut cluster = StorageCluster::<27>::default();
     while let Some(Ok(msg)) = rx.next().await {
         match msg {
             axum::extract::ws::Message::Text(text) => {
                 debug!("recived msg: {}", text);
+                let mut cluster = state.lock().await;
                 let result: color_eyre::Result<()> =
                     match serde_json::from_str::<StorageMessage>(&text) {
                         Ok(msg) => handle_packet(msg, &mut tx, &mut cluster).await,
@@ -100,7 +105,7 @@ async fn handle_packet(
         },
         StorageMessage::PullRequest(mut item) => {
             let mut pulls = Vec::<ItemMoveOperation>::new();
-            for storage in cluster.storages.iter() {
+            for storage in cluster.storages.values() {
                 for (slot, storage_item) in
                     (0..27).map(|i| (i, storage.items.get(i).and_then(|o| o.as_ref())))
                 {
@@ -128,7 +133,7 @@ async fn handle_packet(
             let mut map = HashMap::<(&str, Option<u128>), ListItem>::new();
             for w in cluster
                 .storages
-                .iter()
+                .values()
                 .flat_map(|s| s.items.iter())
                 .filter_map(|v| v.as_ref())
             {
@@ -173,51 +178,69 @@ async fn handle_packet(
         }
         StorageMessage::AddedStorage(s) => {
             debug!("{:?}", s.items);
-            cluster.storages.push(Storage::<27> {
-                net_name: s.net_name,
-                items: s.items.map(Option::from),
-            });
+            cluster.storages.insert(
+                s.net_name.clone(),
+                Storage::<27> {
+                    net_name: s.net_name,
+                    items: s.items.map(Option::from),
+                },
+            );
             debug!("cluster lenght: {}", cluster.storages.len());
         }
         StorageMessage::StorageRemoved(net_name) => {
-            let index = (0..cluster.storages.len())
-                .zip(cluster.storages.iter())
-                .find_map(|(slot, storage)| (storage.net_name == net_name).then_some(slot));
-            if let Some(i) = index {
-                cluster.storages.swap_remove(i);
-            }
+            cluster.storages.remove(&net_name);
+            // let index = (0..cluster.storages.len())
+            //     .zip(cluster.storages.iter())
+            //     .find_map(|(slot, storage)| (storage.net_name == net_name).then_some(slot));
+            // if let Some(i) = index {
+            //     cluster.storages.swap_remove(i);
+            // }
         }
         StorageMessage::ItemPulled {
             storage: net_name,
             slot,
             amount,
         } => {
-            let index = (0..cluster.storages.len())
-                .zip(cluster.storages.iter())
-                .find_map(|(slot, storage)| (storage.net_name == net_name).then_some(slot));
-            if let Some(i) = index {
-                if let Some(item) = cluster.storages[i].items[slot - 1].as_mut() {
+            if let Some(storage) = cluster.storages.get_mut(&net_name) {
+                if let Some(item) = storage.items[slot - 1].as_mut() {
                     if item.amount.saturating_sub(amount) == 0 {
-                        cluster.storages[i].items[slot - 1].take();
+                        storage.items[slot - 1].take();
                         return Ok(());
                     }
                     item.amount = item.amount.saturating_sub(amount);
                 }
             }
+            // let index = (0..cluster.storages.len())
+            //     .zip(cluster.storages.iter())
+            //     .find_map(|(slot, storage)| (storage.net_name == net_name).then_some(slot));
+            // if let Some(i) = index {
+            //     if let Some(item) = cluster.storages[i].items[slot - 1].as_mut() {
+            //         if item.amount.saturating_sub(amount) == 0 {
+            //             cluster.storages[i].items[slot - 1].take();
+            //             return Ok(());
+            //         }
+            //         item.amount = item.amount.saturating_sub(amount);
+            //     }
+            // }
         }
         StorageMessage::ItemPushed {
             storage: net_name,
             slot,
             item,
         } => {
-            let index = (0..cluster.storages.len())
-                .zip(cluster.storages.iter())
-                .find_map(|(slot, storage)| (storage.net_name == net_name).then_some(slot));
-            let Some(index) = index else {
+            // let index = (0..cluster.storages.len())
+            //     .zip(cluster.storages.iter())
+            //     .find_map(|(slot, storage)| (storage.net_name == net_name).then_some(slot));
+            let Some(storage) = cluster.storages.get_mut(&net_name) else {
                 warn!("no storage found while inserting, cache will be out of sync!");
                 return Ok(());
             };
-            match cluster.storages[index].items[slot - 1].as_mut() {
+            // let Some(index) = index else {
+            //     warn!("no storage found while inserting, cache will be out of sync!");
+            //     return Ok(());
+            // };
+            // match cluster.storages[index].items[slot - 1].as_mut() {
+            match storage.items[slot - 1].as_mut() {
                 Some(i) => {
                     if !(item.ident == i.ident && item.nbt_hash == i.nbt_hash) {
                         warn!("item not matching!")
@@ -226,7 +249,8 @@ async fn handle_packet(
                 }
                 None => {
                     info!("inserting new item");
-                    cluster.storages[index].items[slot - 1].replace(item);
+                    // cluster.storages[index].items[slot - 1].replace(item);
+                    storage.items[slot - 1].replace(item);
                 }
             };
         }

@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use log::info;
 use serde::{
@@ -8,14 +8,14 @@ use serde::{
 
 #[derive(Default)]
 pub struct StorageCluster<const SLOTS: usize> {
-    pub storages: Vec<Storage<SLOTS>>,
+    pub storages: HashMap<String, Storage<SLOTS>>,
 }
 
 impl<const T: usize> StorageCluster<T> {
     pub fn find_space(&self, item: &Item) -> Option<Vec<(String, usize)>> {
         let mut amount = item.amount;
         let mut slots = Vec::<(String, usize)>::new();
-        for storage in self.storages.iter() {
+        for storage in self.storages.values() {
             for (slot, storage_item) in
                 (0..T).map(|i| (i, storage.items.get(i).and_then(|o| o.as_ref())))
             {
