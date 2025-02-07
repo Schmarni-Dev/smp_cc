@@ -24,7 +24,7 @@ local function add_inputs()
 				inputs[side] = peripheral.wrap(side);
 			end
 		end
-		coroutine.yield()
+		sleep(0)
 	end
 end
 local function remove_inputs()
@@ -36,7 +36,7 @@ local function remove_inputs()
 				inputs[#inputs] = nil;
 			end
 		end
-		coroutine.yield()
+		sleep(0)
 	end
 end
 
@@ -44,14 +44,9 @@ local function move_items()
 	while true do
 		for _, inv in pairs(inputs) do
 			for slot, item in pairs(output.list()) do
-				inv.pullItems(peripheral.getName(output), slot, 1)
-				if item.count > 0 then
-					break
-				end
+				inv.pushItems(peripheral.getName(output), slot, 1)
 			end
 		end
-		os.startTimer(0.05)
-		coroutine.yield()
 		sleep(0)
 	end
 end

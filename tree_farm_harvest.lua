@@ -11,6 +11,9 @@ local function safe_dig_condition(inspect_fn)
     return Block and information.name ~= "computercraft:turtle_advanced" and information.name ~= "minecraft:dispenser" and information.name ~= "minecraft:barrel"
 end
 local function move()
+    if turtle.getFuelLevel() == 0 then
+        error("out of fuel")
+    end
     local _, _, z = gps.locate(20000000000, false)
     if z == z_lower or z == z_upper then
         if safe_dig_condition(turtle.inspect) then
