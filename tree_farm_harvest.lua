@@ -8,11 +8,13 @@ end
 
 local function safe_dig_condition(inspect_fn)
     local Block, information = inspect_fn()
-    return Block and information.name ~= "computercraft:turtle_advanced" and information.name ~= "minecraft:dispenser" and information.name ~= "minecraft:barrel"
+    return Block and information.name ~= "computercraft:turtle_advanced" and information.name ~= "minecraft:dispenser" and
+        information.name ~= "minecraft:barrel"
 end
 local function move()
     if turtle.getFuelLevel() == 0 then
         error("out of fuel")
+        os.exit(1)
     end
     local _, _, z = gps.locate(20000000000, false)
     if z == z_lower or z == z_upper then
@@ -45,7 +47,6 @@ local function init_condition()
     return block and (info.name == "minecraft:polished_diorite" or info.name == "minecraft:barrel")
 end
 local function init()
-    sleep(10)
     local _, _, z = gps.locate(20000000000, false)
     if not (z == z_lower or z == z_upper) then
         move()
@@ -57,10 +58,8 @@ local function init()
         turtle.turnRight()
     end
 end
-
-init()
-while true do
-    if turtle.getFuelLevel() < 100 then
+local function refuel()
+    while turtle.getFuelLevel() < 256 do
         turtle.turnRight()
         turtle.turnRight()
         turtle.suck()
@@ -68,6 +67,11 @@ while true do
         turtle.turnRight()
         turtle.turnRight()
     end
+end
+
+init()
+while true do
+    parallel.waitForAny(refuel, dropDown)
     parallel.waitForAny(wait, dropDown)
     move()
     turtle.turnRight()

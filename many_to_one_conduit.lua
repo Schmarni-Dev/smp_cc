@@ -43,7 +43,7 @@ end
 local function move_items()
 	while true do
 		for _, inv in pairs(inputs) do
-			for slot, item in pairs(output.list()) do
+			for slot, item in pairs(inv.list()) do
 				inv.pushItems(peripheral.getName(output), slot, 1)
 			end
 		end
